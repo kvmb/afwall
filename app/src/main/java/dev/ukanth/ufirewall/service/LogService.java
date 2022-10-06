@@ -182,7 +182,7 @@ public class LogService extends Service {
         appIntent.addCategory(Intent.CATEGORY_LAUNCHER);
         appIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
 
-        PendingIntent notifyPendingIntent = PendingIntent.getActivity(ctx, 0, appIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent notifyPendingIntent = PendingIntent.getActivity(ctx, 0, appIntent, PendingIntent.FLAG_IMMUTABLE);
         notificationBuilder = new NotificationCompat.Builder(ctx, NOTIFICATION_CHANNEL_ID);
         notificationBuilder.setContentIntent(notifyPendingIntent);
     }
@@ -200,7 +200,7 @@ public class LogService extends Service {
             Log.i(TAG, "Staring log watcher");
             //Toast.makeText(getApplicationContext(), getString(R.string.log_service_watcher), Toast.LENGTH_SHORT).show();
             try {
-                com.topjohnwu.superuser.Shell.su(logCommand).to(callbackList).submit(executorService, out -> {
+                com.topjohnwu.superuser.Shell.cmd(logCommand).to(callbackList).submit(executorService, out -> {
                     //failed to start, try restarting
                     if (out.getCode() == 0) {
                         restartWatcher(logPath);
@@ -354,7 +354,7 @@ public class LogService extends Service {
         Log.d(TAG, "Log service removed");
 
         Intent intent = new Intent(getApplicationContext(), LogService.class);
-        PendingIntent pendingIntent = PendingIntent.getService(this, 1, intent, PendingIntent.FLAG_ONE_SHOT);
+        PendingIntent pendingIntent = PendingIntent.getService(this, 1, intent, PendingIntent.FLAG_MUTABLE);
         AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         alarmManager.set(AlarmManager.RTC_WAKEUP, SystemClock.elapsedRealtime() + 000, pendingIntent);
         if(executorService != null) {

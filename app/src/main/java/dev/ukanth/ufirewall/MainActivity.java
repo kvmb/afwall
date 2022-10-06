@@ -128,6 +128,8 @@ public class MainActivity extends AppCompatActivity implements AdapterView.OnIte
     private static final int MY_PERMISSIONS_REQUEST_WRITE_STORAGE = 1;
     private static final int MY_PERMISSIONS_REQUEST_READ_STORAGE = 2;
     private static final int MY_PERMISSIONS_REQUEST_WRITE_STORAGE_ASSET = 3;
+    private static final int PERMISSION_BLUETOOTH = 4;
+
     public static boolean dirty = false;
 
 
@@ -176,6 +178,7 @@ public class MainActivity extends AppCompatActivity implements AdapterView.OnIte
 
         initTheme();
         G.registerPrivateLink();
+        checkPermissions();
 
         try {
             final int FLAG_HARDWARE_ACCELERATED = WindowManager.LayoutParams.class
@@ -237,6 +240,18 @@ public class MainActivity extends AppCompatActivity implements AdapterView.OnIte
         initTextWatcher();
         registerThemeIntent();
         registerUIRefresh();
+    }
+
+    private void checkPermissions() {
+        if(G.enableTether()) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) {
+                // permissions have not been granted.
+                ActivityCompat.requestPermissions(MainActivity.this,
+                        new String[]{Manifest.permission.BLUETOOTH_CONNECT},
+                        PERMISSION_BLUETOOTH);
+            }
+        }
     }
 
     private void updateSelectedColumns() {
@@ -509,24 +524,31 @@ public class MainActivity extends AppCompatActivity implements AdapterView.OnIte
             }
             inputList = new ArrayList<>(returnList);
         } else {
-            inputList = allApps;
+            if(allApps != null && allApps.size() > 0) {
+                inputList = allApps;
+            } else{
+                inputList = new ArrayList<>(returnList);
+            }
         }
-
-        try {
-            Collections.sort(inputList, new PackageComparator());
-        } catch (Exception e) {
-            Log.d(Api.TAG, "Exception in filter Sorting");
+        if(inputList != null && inputList.size() > 0) {
+            try {
+                Collections.sort(inputList, new PackageComparator());
+            } catch (Exception e) {
+                Log.d(Api.TAG, "Exception in filter Sorting");
+            }
+            ArrayAdapter appAdapter;
+            if (selectedColumns <= DEFAULT_VIEW_LIMIT) {
+                appAdapter = new AppListArrayAdapter(this, getApplicationContext(), inputList, true);
+            } else {
+                appAdapter = new AppListArrayAdapter(this, getApplicationContext(), inputList);
+            }
+            this.listview.setAdapter(appAdapter);
+            appAdapter.notifyDataSetChanged();
+            // restore
+            this.listview.setSelectionFromTop(index, top);
+        } else{
+            Log.d(Api.TAG, "Input list is empty");
         }
-        ArrayAdapter appAdapter;
-        if(selectedColumns <= DEFAULT_VIEW_LIMIT) {
-            appAdapter = new AppListArrayAdapter(this, getApplicationContext(), inputList, true);
-        } else {
-            appAdapter = new AppListArrayAdapter(this, getApplicationContext(), inputList);
-        }
-        this.listview.setAdapter(appAdapter);
-        appAdapter.notifyDataSetChanged();
-        // restore
-        this.listview.setSelectionFromTop(index, top);
     }
 
     @Override
@@ -1245,7 +1267,7 @@ public class MainActivity extends AppCompatActivity implements AdapterView.OnIte
             String targetDir = ctx.getExternalFilesDir(null) + "/";
             String command = "cp -R " + existingDir + " " + targetDir;
             Log.i(TAG, "Invoking migration script " + command);
-            com.topjohnwu.superuser.Shell.Result result = com.topjohnwu.superuser.Shell.su(command).exec();
+            com.topjohnwu.superuser.Shell.Result result = com.topjohnwu.superuser.Shell.cmd(command).exec();
             G.hasCopyOldExports(true);
         }
     }
@@ -2592,7 +2614,9 @@ public class MainActivity extends AppCompatActivity implements AdapterView.OnIte
 
         @Override
         protected Void doInBackground(Void... params) {
-            suGranted[0] = Shell.rootAccess();
+            //open shell if required
+            Shell.getShell().isRoot();
+            suGranted[0] = Shell.isAppGrantedRoot();
             unsupportedSU = isSuPackage(getPackageManager(), "com.kingouser.com");
             return null;
         }

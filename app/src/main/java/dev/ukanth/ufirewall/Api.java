@@ -123,6 +123,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -220,7 +221,19 @@ public final class Api {
     private static final String[] dynChains = {"-3g-postcustom", "-3g-fork", "-wifi-postcustom", "-wifi-fork"};
     private static final String[] natChains = {"", "-tor-check", "-tor-filter"};
     private static final String[] staticChains = {"", "-input", "-3g", "-wifi", "-reject", "-vpn", "-3g-tether", "-3g-home", "-3g-roam", "-wifi-tether", "-wifi-wan", "-wifi-lan", "-tor", "-tor-reject", "-tether"};
-/**
+    private static boolean globalStatus = false;
+
+    public static List<Integer> getListOfUids() {
+        return listOfUids;
+    }
+
+    private static List<Integer> listOfUids = new ArrayList<>();
+
+
+
+    private static final Pattern dual_pattern = Pattern.compile("package:(.*) uid:(.*)", Pattern.MULTILINE);
+
+    /**
      * @brief Special user/group IDs that aren't associated with
      * any particular app.
      * <p>
@@ -369,11 +382,6 @@ public final class Api {
     public static String getNflogPath(Context ctx) {
         String dir = ctx.getDir("bin", 0).getAbsolutePath();
         return dir + "/nflog ";
-        /*if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) {
-            return dir + "/run_pie " + dir + "/nflog ";
-        } else {
-            return dir + "/nflog ";
-        }*/
     }
 
     /**
@@ -630,67 +638,11 @@ public final class Api {
         return ctx.getString(R.string.unknown_item);
     }
 
-   /* public static RuleDataSet merge(RuleDataSet original, RuleDataSet modified) {
-        if (modified.dataList.size() > 0) {
-            for (Integer integer : modified.dataList) {
-                if (integer > 0) {
-                    original.dataList.add(integer);
-                } else {
-                    original.dataList.remove(Integer.valueOf(-integer));
-                }
-            }
-        }
-        if (modified.roamList.size() > 0) {
-            for (Integer integer : modified.roamList) {
-                if (integer > 0) {
-                    original.roamList.add(integer);
-                } else {
-                    original.roamList.remove(Integer.valueOf(-integer));
-                }
-            }
-        }
-        if (modified.lanList.size() > 0) {
-            for (Integer integer : modified.lanList) {
-                if (integer > 0) {
-                    original.lanList.add(integer);
-                } else {
-                    original.lanList.remove(Integer.valueOf(-integer));
-                }
-            }
-        }
-        if (modified.vpnList.size() > 0) {
-            for (Integer integer : modified.vpnList) {
-                if (integer > 0) {
-                    original.vpnList.add(integer);
-                } else {
-                    original.vpnList.remove(Integer.valueOf(-integer));
-                }
-            }
-        }
-        if (modified.wifiList.size() > 0) {
-            for (Integer integer : modified.wifiList) {
-                if (integer > 0) {
-                    original.wifiList.add(integer);
-                } else {
-                    original.wifiList.remove(Integer.valueOf(-integer));
-                }
-            }
-        }
-        if (modified.torList.size() > 0) {
-            for (Integer integer : modified.torList) {
-                if (integer > 0) {
-                    original.torList.add(integer);
-                } else {
-                    original.torList.remove(Integer.valueOf(-integer));
-                }
-            }
-        }
-        return original;
-    }*/
 
     private static void applyShortRules(Context ctx, List<String> cmds, boolean ipv6) {
         Log.i(TAG, "Setting OUTPUT chain to DROP");
         cmds.add("-P OUTPUT DROP");
+        /*FIXME: Adding custom rules might increase the time */
         Log.i(TAG, "Applying custom rules");
         addCustomRules(Api.PREF_CUSTOMSCRIPT, cmds);
         addInterfaceRouting(ctx, cmds, ipv6);
@@ -953,30 +905,50 @@ public final class Api {
     }
 
 
+    public static void waitAndTerminate(ExecutorService executorService) {
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException ex) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
     public static void applySavedIptablesRules(Context ctx, boolean showErrors, RootCommand callback) {
-        Log.i(TAG, "Using applySavedIptablesRules");
-        RuleDataSet dataSet = getDataSet();
-        //boolean[] applied = {false, false};
 
-        List<String> ipv4cmds = new ArrayList<>();
-        List<String> ipv6cmds = new ArrayList<>();
+        if(!globalStatus) {
+            Log.i(TAG, "Using applySavedIptablesRules");
+            globalStatus = true;
+            ExecutorService executorService = Executors.newFixedThreadPool(2);
+            RuleDataSet dataSet = getDataSet();
 
-        ExecutorService executorService = Executors.newFixedThreadPool(2);
+            List<String> ipv4cmds = new ArrayList<>();
+            List<String> ipv6cmds = new ArrayList<>();
 
-        executorService.submit(() -> {
-            applyIptablesRulesImpl(ctx, dataSet, showErrors, ipv4cmds, false);
-            applySavedIp4tablesRules(ctx, ipv4cmds, callback);
-
-        });
-
-        if (G.enableIPv6()) {
             executorService.submit(() -> {
-                applyIptablesRulesImpl(ctx, dataSet, showErrors, ipv6cmds, true);
-                applySavedIp6tablesRules(ctx, ipv6cmds, new RootCommand());
+                applyIptablesRulesImpl(ctx, dataSet, showErrors, ipv4cmds, false);
+                applySavedIp4tablesRules(ctx, ipv4cmds, callback);
+
             });
 
+            if (G.enableIPv6()) {
+                executorService.submit(() -> {
+                    applyIptablesRulesImpl(ctx, dataSet, showErrors, ipv6cmds, true);
+                    applySavedIp6tablesRules(ctx, ipv6cmds, new RootCommand());
+                });
+
+            }
+            waitAndTerminate(executorService);
+            globalStatus = false;
+            rulesUpToDate = true;
+
+        } else {
+            Log.i(TAG, "ignore applySavedIptablesRules as existing thread running");
         }
-        rulesUpToDate = true;
+
     }
 
 
@@ -1171,20 +1143,6 @@ public final class Api {
 
     }
 
-    /*public static void checkPermission(Context ctx) {
-        int ACTION_MANAGE_OVERLAY_PERMISSION_REQUEST_CODE = 5469;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.canDrawOverlays(ctx)) {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:" + ctx.getPackageName()));
-                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                //((Activity)ctx).startActivityForResult(intent, ACTION_MANAGE_OVERLAY_PERMISSION_REQUEST_CODE);
-                ctx.startActivity(intent);
-            }
-        }
-    }*/
-
     /**
      * Purge all iptables rules.
      *
@@ -1343,13 +1301,6 @@ public final class Api {
         apply46(ctx, cmds, callback);
     }
 
-    /**
-     * Clear firewall logs by purging dmesg
-     *
-     */
-    //public static void clearLog(Context ctx, RootCommand callback) {
-    //    callback.run(ctx, getBusyBoxPath(ctx, true) + " dmesg -c");
-    //}
 
     //purge 2 hour data
     public static void purgeOldLog() {
@@ -1470,7 +1421,7 @@ public final class Api {
 
         int count = 0;
         try {
-            List<Integer> listOfUids = new ArrayList<>();
+            listOfUids = new ArrayList<>();
             PackageManager pkgmanager = ctx.getPackageManager();
             //this code will be executed on devices running ICS or later
             final UserManager um = (UserManager) ctx.getSystemService(Context.USER_SERVICE);
@@ -1505,6 +1456,8 @@ public final class Api {
             install.setTime(System.currentTimeMillis() - (180000));
 
             SparseArray<PackageInfoData> multiUserAppsMap = new SparseArray<>();
+
+            HashMap<Integer,String> listMaps = getPackagesForUser(listOfUids);
 
             for (int i = 0; i < installed.size(); i++) {
                 //for (ApplicationInfo apinfo : installed) {
@@ -1576,7 +1529,7 @@ public final class Api {
                     app.selected_tor = true;
                 }
                 if (G.supportDual()) {
-                    checkPartOfMultiUser(apinfo, name, listOfUids, pkgmanager, multiUserAppsMap);
+                    checkPartOfMultiUser(apinfo, name, listOfUids, listMaps, multiUserAppsMap);
                 }
             }
 
@@ -1702,13 +1655,13 @@ public final class Api {
         return specialData;
     }
 
-    private static void checkPartOfMultiUser(ApplicationInfo apinfo, String name, List<Integer> uid1, PackageManager pkgmanager, SparseArray<PackageInfoData> syncMap) {
+    private static void checkPartOfMultiUser(ApplicationInfo apinfo, String name, List<Integer> uid1, HashMap<Integer,String> pkgs, SparseArray<PackageInfoData> syncMap) {
         try {
             for (Integer integer : uid1) {
                 int appUid = Integer.parseInt(integer + "" + apinfo.uid + "");
                 try{
-                    String[] pkgs = pkgmanager.getPackagesForUid(appUid);
-                    if (pkgs != null) {
+                    //String[] pkgs = pkgmanager.getPackagesForUid(appUid);
+                    if (packagesExistForUserUid(pkgs, appUid)) {
                         PackageInfoData app = new PackageInfoData();
                         app.uid = appUid;
                         app.installTime = new File(apinfo.sourceDir).lastModified();
@@ -1734,6 +1687,32 @@ public final class Api {
         }
     }
 
+    private static boolean packagesExistForUserUid(HashMap<Integer,String> pkgs, int appUid) {
+        if(pkgs.containsKey(appUid)){
+            return true;
+        }
+        return false;
+    }
+
+    public static HashMap<Integer, String> getPackagesForUser(List<Integer> userProfile) {
+        HashMap<Integer,String> listApps = new HashMap<>();
+        for(Integer integer: userProfile) {
+            Shell.Result result = Shell.cmd("pm list packages -U --user " + integer).exec();
+            List<String> out = result.getOut();
+            Matcher matcher;
+            for (String item : out) {
+                matcher = dual_pattern.matcher(item);
+                if (matcher.find() && matcher.groupCount() > 0) {
+                    String packageName = matcher.group(1);
+                    String packageId = matcher.group(2);
+                    Log.i(TAG, packageId + " " + packageName);
+                    listApps.put(Integer.parseInt(packageId), packageName);
+                }
+            }
+        }
+        return listApps.size() > 0 ? listApps : null;
+    }
+
     private static boolean isRecentlyInstalled(String packageName) {
         boolean isRecent = false;
         if (recentlyInstalled != null && recentlyInstalled.contains(packageName)) {
@@ -1757,18 +1736,7 @@ public final class Api {
         return listUids;
     }
 
-    /*public static void removeNotification(Context context) {
-
-        final int NOTIF_ID = 33341;
-        String notificationText = "";
-
-        NotificationManager mNotificationManager = (NotificationManager) context
-                .getSystemService(Context.NOTIFICATION_SERVICE);
-
-        mNotificationManager.cancel(NOTIF_ID);
-    }*/
-
-    public static boolean isAppAllowed(Context context, ApplicationInfo applicationInfo, SharedPreferences sharedPreferences, SharedPreferences pPrefs) {
+    /*public static boolean isAppAllowed(Context context, ApplicationInfo applicationInfo, SharedPreferences sharedPreferences, SharedPreferences pPrefs) {
         InterfaceDetails details = InterfaceTracker.getCurrentCfg(context, true);
         //allow webview to download since webview requires INTERNET permission
         if (applicationInfo.packageName.equals("com.android.webview") || applicationInfo.packageName.equals("com.google.android.webview")) {
@@ -1784,7 +1752,7 @@ public final class Api {
                         savedPkg_wifi_uid = sharedPreferences.getString(PREF_WIFI_PKG_UIDS, "");
                     }
                     Log.i(TAG, "DM check for UID: " + applicationInfo.uid);
-                    Log.i(TAG, "DM allowed UsavedPkg_wifi_uidIDs: " + savedPkg_wifi_uid);
+                    Log.i(TAG, "DM allowed UIDs: " + savedPkg_wifi_uid);
                     if (mode.equals(Api.MODE_WHITELIST) && savedPkg_wifi_uid.contains(applicationInfo.uid + "")) {
                         return true;
                     } else return mode.equals(Api.MODE_BLACKLIST) && !savedPkg_wifi_uid.contains(applicationInfo.uid + "");
@@ -1803,7 +1771,7 @@ public final class Api {
         }
 
         return true;
-    }
+    }*/
 
     /**
      * Get Default Chain status
@@ -1892,60 +1860,6 @@ public final class Api {
         }
     }
 
-    /*private static void deleteStartFixFiles(final Context ctx) {
-        String path = G.initPath();
-        File f = new File(path);
-        final String initScript = "afwallstart";
-        if (f.exists() && f.isDirectory()) {
-            final String filePath = path + "/" + initScript;
-
-            new Thread(() -> {
-                if (mountDir(ctx, getFixLeakPath(initScript), "RW")) {
-                    new RootCommand()
-                            .setReopenShell(true).setCallback(new RootCommand.Callback() {
-                        @Override
-                        public void cbFunc(RootCommand state) {
-                            if (state.exitCode == 0) {
-                                sendToastBroadcast(ctx, ctx.getString(R.string.remove_initd));
-                            } else {
-                                sendToastBroadcast(ctx, ctx.getString(R.string.delete_initd_error));
-                            }
-                        }
-                    }).setLogging(true).run(ctx, "rm -f " + filePath);
-                    mountDir(ctx, getFixLeakPath(initScript), "RO");
-                } else {
-                    Api.sendToastBroadcast(ctx, ctx.getString(R.string.mount_initd_error));
-                }
-            }).start();
-        }
-    }
-
-    private static void updateFixLeakScript(Context ctx) {
-        final String initScript = "afwallstart";
-        final String srcPath = new File(ctx.getDir("bin", 0), initScript)
-                .getAbsolutePath();
-
-        new Thread(() -> {
-            String path = G.initPath();
-            if (path != null) {
-                File f = new File(path);
-                if (mountDir(ctx, getFixLeakPath(initScript), "RW")) {
-                    //make sure it's executable
-                    new RootCommand()
-                            .setReopenShell(true)
-                            .run(ctx, "chmod 755 " + f.getAbsolutePath());
-                    if (RootTools.copyFile(srcPath, (f.getAbsolutePath() + "/" + initScript),
-                            true, false)) {
-                        Api.sendToastBroadcast(ctx, ctx.getString(R.string.success_initd));
-                    }
-                    mountDir(ctx, getFixLeakPath(initScript), "RO");
-                } else {
-                    Api.sendToastBroadcast(ctx, ctx.getString(R.string.mount_initd_error));
-                }
-            }
-        }).start();
-    }*/
-
     /**
      * Asserts that the binary files are installed in the cache directory.
      *
@@ -2010,28 +1924,10 @@ public final class Api {
                 toast(ctx, ctx.getString(R.string.error_binary));
             }
         }
-
-        /*if (currentVer > 0) {
-            if (migrateSettings(ctx, lastVer, currentVer) == false && showErrors) {
-                toast(ctx, ctx.getString(R.string.error_migration));
-            }
-        }*/
-
         if (ret && currentVer > 0) {
             // this indicates that migration from the old version was successful.
             G.appVersion(currentVer);
         }
-
-      /*  try {
-            if (G.initPath() != null && !G.initPath().isEmpty() && G.fixLeak()) {
-                try {
-                    deleteStartFixFiles(ctx);
-                    updateFixLeakScript(ctx);
-                } catch (Exception e) {
-
-                }
-            }
-        }*/
         return ret;
     }
 
@@ -2043,7 +1939,6 @@ public final class Api {
      */
     public static boolean isEnabled(Context ctx) {
         if (ctx == null) return false;
-        //Log.d(TAG, "Checking for IsEnabled, Flag:" + flag);
         return ctx.getSharedPreferences(PREF_FIREWALL_STATUS, Context.MODE_PRIVATE).getBoolean(PREF_ENABLED, false);
     }
 
@@ -2067,10 +1962,6 @@ public final class Api {
             if (showErrors) toast(ctx, ctx.getString(R.string.error_write_pref));
             return;
         }
-
-       /* if (G.activeNotification()) {
-            showNotification(Api.isEnabled(ctx), ctx);
-        }*/
 
         //addNotification();
         Intent myService = new Intent(ctx, FirewallService.class);
@@ -2117,7 +2008,7 @@ public final class Api {
                 .addParentStack(MainActivity.class)
                 .addNextIntent(new Intent(ctx, MainActivity.class));
 
-        PendingIntent notifyPendingIntent = PendingIntent.getActivity(ctx, 0, appIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent notifyPendingIntent = PendingIntent.getActivity(ctx, 0, appIntent, PendingIntent.FLAG_IMMUTABLE);
         NotificationCompat.Builder notificationBuilder = new NotificationCompat.Builder(ctx, NOTIFICATION_CHANNEL_ID);
         notificationBuilder.setContentIntent(notifyPendingIntent);
 
@@ -2205,7 +2096,7 @@ public final class Api {
         int notifyType = G.getNotificationPriority();
 
 
-        PendingIntent notifyPendingIntent = PendingIntent.getActivity(ctx, 0, appIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent notifyPendingIntent = PendingIntent.getActivity(ctx, 0, appIntent, PendingIntent.FLAG_IMMUTABLE);
         NotificationCompat.Builder notificationBuilder = new NotificationCompat.Builder(ctx, NOTIFICATION_CHANNEL_ID);
         notificationBuilder.setContentIntent(notifyPendingIntent);
 
@@ -2303,21 +2194,11 @@ public final class Api {
         return true;
     }
 
-    public static PackageInfo getPackageDetails(Context ctx, String targetPackage) {
+    public static PackageInfo getPackageDetails(Context ctx, HashMap<Integer, String> listMaps, int uid) {
         try {
             final PackageManager pm = ctx.getPackageManager();
-            return pm.getPackageInfo(targetPackage, PackageManager.GET_META_DATA);
-        } catch (NameNotFoundException e) {
-            return null;
-        }
-    }
-
-    public static PackageInfo getPackageDetails(Context ctx, int uid) {
-        try {
-            final PackageManager pm = ctx.getPackageManager();
-            String[] packages = pm.getPackagesForUid(uid);
-            if (packages != null && packages.length > 0) {
-                return pm.getPackageInfo(packages[0], PackageManager.GET_META_DATA);
+            if (listMaps.containsKey(uid)) {
+                return pm.getPackageInfo(listMaps.get(uid), PackageManager.GET_META_DATA);
             } else {
                 return null;
             }
@@ -2364,61 +2245,6 @@ public final class Api {
             if (isEnabled(ctx)) {
                 // .. and also re-apply the rules if the firewall is enabled
                 applySavedIptablesRules(ctx, false, new RootCommand());
-            }
-        }
-    }
-
-   /* public static boolean checkMD5(String md5, File updateFile) {
-        if (md5.isEmpty() || updateFile == null) {
-            dev.ukanth.ufirewall.log.Log.e(TAG, "MD5 string empty or updateFile null");
-            return false;
-        }
-
-        String calculatedDigest = calculateMD5(updateFile);
-        if (calculatedDigest == null) {
-            dev.ukanth.ufirewall.log.Log.e(TAG, "calculatedDigest null");
-            return false;
-        }
-
-        return calculatedDigest.equalsIgnoreCase(md5);
-    }*/
-
-    private static String calculateMD5(File updateFile) {
-        MessageDigest digest;
-        try {
-            digest = MessageDigest.getInstance("MD5");
-        } catch (NoSuchAlgorithmException e) {
-            Log.e(TAG, "Exception while getting digest", e);
-            return null;
-        }
-
-        InputStream is;
-        try {
-            is = new FileInputStream(updateFile);
-        } catch (FileNotFoundException e) {
-            Log.e(TAG, "Exception while getting FileInputStream", e);
-            return null;
-        }
-
-        byte[] buffer = new byte[8192];
-        int read;
-        try {
-            while ((read = is.read(buffer)) > 0) {
-                digest.update(buffer, 0, read);
-            }
-            byte[] md5sum = digest.digest();
-            BigInteger bigInt = new BigInteger(1, md5sum);
-            String output = bigInt.toString(16);
-            // Fill to 32 chars
-            output = String.format("%32s", output).replace(' ', '0');
-            return output;
-        } catch (IOException e) {
-            throw new RuntimeException("Unable to process file for MD5", e);
-        } finally {
-            try {
-                is.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Exception on closing MD5 input stream", e);
             }
         }
     }
@@ -2692,7 +2518,7 @@ public final class Api {
         boolean returnVal = false;
         BufferedReader br = null;
         try {
-            com.topjohnwu.superuser.Shell.Result result  = com.topjohnwu.superuser.Shell.su("cat " + file.getAbsolutePath()).exec();
+            com.topjohnwu.superuser.Shell.Result result  = com.topjohnwu.superuser.Shell.cmd("cat " + file.getAbsolutePath()).exec();
             List<String> out = result.getOut();
             String data = TextUtils.join("", out);
 
@@ -3066,184 +2892,23 @@ public final class Api {
     public static void probeLogTarget(final Context ctx) {
 
     }
-    /*public static void setLogTarget(final Context ctx, boolean isEnabled) {
-        if (!isEnabled) {
-            // easy case: just disable
-            G.enableLogService(false);
-            updateLogRules(ctx, new RootCommand()
-                    .setReopenShell(true)
-                    .setSuccessToast(R.string.log_was_disabled)
-                    .setFailureToast(R.string.log_toggle_failed));
-            return;
-        }
-
-        if (G.logTarget() == null || G.logTarget().isEmpty()) {
-            LogProbeCallback cb = new LogProbeCallback();
-            cb.ctx = ctx;
-            // probe for LOG/NFLOG targets (unfortunately the file must be read by root)
-            //check for ip6 enabled from preference and check against the same
-            if (G.enableIPv6()) {
-                new RootCommand()
-                        .setReopenShell(true)
-                        .setFailureToast(R.string.log_toggle_failed)
-                        .setCallback(cb)
-                        .setLogging(true)
-                        .run(ctx, "cat /proc/net/ip6_tables_targets");
-            }
-            new RootCommand()
-                    .setReopenShell(true)
-                    .setFailureToast(R.string.log_toggle_failed)
-                    .setCallback(cb)
-                    .setLogging(true)
-                    .run(ctx, "cat /proc/net/ip_tables_targets");
-        } else {
-            G.enableLogService(true);
-            updateLogRules(ctx, new RootCommand()
-                    .setReopenShell(true)
-                    .setSuccessToast(R.string.log_was_enabled)
-                    .setFailureToast(R.string.log_target_failed));
-        }
-    }*/
-
+    
     @SuppressLint("InlinedApi")
     public static void showInstalledAppDetails(Context context, String packageName) {
         final String SCHEME = "package";
-        final String APP_PKG_NAME_21 = "com.android.settings.ApplicationPkgName";
-        final String APP_PKG_NAME_22 = "pkg";
-        final String APP_DETAILS_PACKAGE_NAME = "com.android.settings";
-        final String APP_DETAILS_CLASS_NAME = "com.android.settings.InstalledAppDetails";
-
         Intent intent = new Intent();
         final int apiLevel = Build.VERSION.SDK_INT;
-        if (apiLevel >= 9) { // above 2.3
-            intent.setAction(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            Uri uri = Uri.fromParts(SCHEME, packageName, null);
-            intent.setData(uri);
-        } else { // below 2.3
-            final String appPkgName = (apiLevel == 8 ? APP_PKG_NAME_22
-                    : APP_PKG_NAME_21);
-            intent.setAction(Intent.ACTION_VIEW);
-            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            intent.setClassName(APP_DETAILS_PACKAGE_NAME,
-                    APP_DETAILS_CLASS_NAME);
-            intent.putExtra(appPkgName, packageName);
-        }
+        intent.setAction(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Uri uri = Uri.fromParts(SCHEME, packageName, null);
+        intent.setData(uri);
         context.startActivity(intent);
     }
 
     public static boolean isNetfilterSupported() {
-        //!new File("/proc/config.gz").exists() ||
-        /*else {
-            String[] features = new String[]{"CONFIG_NETFILTER=", "CONFIG_IP_NF_IPTABLES=", "CONFIG_NF_NAT"};
-            return hasKernelFeature(features, getKernelFeatures("/proc/config.gz"));
-        }*/
-        return new File("/proc/net/netfilter").exists()
-                && new File("/proc/net/ip_tables_targets").exists();
-    }
-
-    /*public static List<String> interfaceInfo(boolean showMatches) {
-        List<String> ret = new ArrayList<String>();
-        try {
-            for (File f : new File("/sys/class/net").listFiles()) {
-                String name = f.getName();
-
-                if (!showMatches) {
-                    ret.add(name);
-                } else {
-                    if (InterfaceTracker.matchName(InterfaceTracker.ITFS_WIFI, name) != null) {
-                        ret.add(name + ": wifi");
-                    } else if (InterfaceTracker.matchName(InterfaceTracker.ITFS_3G, name) != null) {
-                        ret.add(name + ": 3G");
-                    } else if (InterfaceTracker.matchName(InterfaceTracker.ITFS_VPN, name) != null) {
-                        ret.add(name + ": VPN");
-                    } else {
-                        ret.add(name + ": unknown");
-                    }
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "can't list network interfaces: " + e.getLocalizedMessage());
-        }
-        return ret;
-    }*/
-
-    public static LinkedList<String> getKernelFeatures(String location) {
-        LinkedList<String> list = new LinkedList<String>();
-
-        if (hasKernelConfig()) {
-            try {
-                File cfg = new File(location);
-                FileInputStream fis = new FileInputStream(cfg);
-                GZIPInputStream gzip = new GZIPInputStream(fis);
-                BufferedReader in;
-                String line;
-
-                in = new BufferedReader(new InputStreamReader(gzip));
-                while ((line = in.readLine()) != null) {
-                    if (!line.startsWith("#")) {
-                        list.add(line);
-                    }
-                }
-                in.close();
-                gzip.close();
-                fis.close();
-
-            } catch (Exception e) {
-
-            }
-        }
-        return list;
-    }
-
-    public static RuleDataSet getExistingRuleSet() {
-        initSpecial();
-
-        final String savedPkg_wifi_uid = G.pPrefs.getString(PREF_WIFI_PKG_UIDS, "");
-        final String savedPkg_3g_uid = G.pPrefs.getString(PREF_3G_PKG_UIDS, "");
-        final String savedPkg_roam_uid = G.pPrefs.getString(PREF_ROAMING_PKG_UIDS, "");
-        final String savedPkg_vpn_uid = G.pPrefs.getString(PREF_VPN_PKG_UIDS, "");
-        final String savedPkg_tether_uid = G.pPrefs.getString(PREF_TETHER_PKG_UIDS, "");
-        final String savedPkg_lan_uid = G.pPrefs.getString(PREF_LAN_PKG_UIDS, "");
-        final String savedPkg_tor_uid = G.pPrefs.getString(PREF_TOR_PKG_UIDS, "");
-
-        return new RuleDataSet(getListFromPref(savedPkg_wifi_uid),
-                getListFromPref(savedPkg_3g_uid),
-                getListFromPref(savedPkg_roam_uid),
-                getListFromPref(savedPkg_vpn_uid),
-                getListFromPref(savedPkg_tether_uid),
-                getListFromPref(savedPkg_lan_uid),
-                getListFromPref(savedPkg_tor_uid));
-    }
-
-    public static boolean hasKernelFeature(String[] features,
-                                           LinkedList<String> location) {
-        if (location.isEmpty()) {
-            return false;
-        }
-        boolean[] results = new boolean[features.length];
-        for (int i = 0; i < features.length; i++) {
-            for (String test : location) {
-                if (test.startsWith(features[i])) {
-                    results[i] = true;
-                    break;
-                }
-            }
-        }
-        for (boolean b : results) if (!b) return false;
-        return true;
-    }
-
-	/*public static void showAlertDialogActivity(Context ctx,String title, String message) {
-        Intent dialog = new Intent(ctx,AlertDialogActivity.class);
-		dialog.putExtra("title", title);
-		dialog.putExtra("message", message);
-		dialog.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-		ctx.startActivity(dialog);
-	}*/
-
-    public static boolean hasKernelConfig() {
-        return new File("/proc/config.gz").exists();
+        boolean netfiler_exists = new File("/proc/net/netfilter").exists();
+        Shell.Result result = Shell.cmd("cat /proc/net/ip_tables_targets").exec();
+        return netfiler_exists && result.isSuccess();
     }
 
     private static void initSpecial() {
@@ -3335,19 +3000,6 @@ public final class Api {
             return data.toString();
         }
         return null;
-    }
-
-    /* Checks if external storage is available for read and write */
-    public static boolean isExternalStorageWritable() {
-        String state = Environment.getExternalStorageState();
-        return Environment.MEDIA_MOUNTED.equals(state);
-    }
-
-    /* Checks if external storage is available to at least read */
-    public static boolean isExternalStorageReadable() {
-        String state = Environment.getExternalStorageState();
-        return Environment.MEDIA_MOUNTED.equals(state)
-                || Environment.MEDIA_MOUNTED_READ_ONLY.equals(state);
     }
 
     /**
@@ -3511,22 +3163,6 @@ public final class Api {
         apply46(ctx, cmds, callback);
     }
 
-    public static boolean hasRoot() {
-        final boolean[] hasRoot = new boolean[1];
-        Thread t = new Thread() {
-            @Override
-            public void run() {
-                hasRoot[0] = Shell.rootAccess();
-            }
-        };
-        t.start();
-        try {
-            t.join();
-        } catch (InterruptedException e) {
-        }
-        return hasRoot[0];
-    }
-
     // Clipboard
     public static void copyToClipboard(Context context, String val) {
         ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -3559,7 +3195,7 @@ public final class Api {
 
     public static boolean mountDir(Context context, String path, String mountType) {
         if (path != null) {
-            String busyboxPath = Api.getBusyBoxPath(context, false);
+            String busyboxPath = Api.getBusyBoxPath(context, true);
             if (!busyboxPath.trim().isEmpty()) {
                 return RootTools.remount(path, mountType, busyboxPath);
             } else {
@@ -3592,30 +3228,6 @@ public final class Api {
             }).start();
         }
     }
-
-    /*public static boolean isAFWallAllowed(Context context) {
-        try {
-            int uid = context.getPackageManager().getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA).uid;
-            SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-            List<Integer> selected_wifi = getListFromPref(prefs.getString(PREF_WIFI_PKG_UIDS, ""));
-            List<Integer> selected_3g = getListFromPref(prefs.getString(PREF_3G_PKG_UIDS, ""));
-            List<Integer> selected_roam = new ArrayList<>();
-            List<Integer> selected_vpn = new ArrayList<>();
-            List<Integer> selected_tether = new ArrayList<>();
-            if (G.enableRoam()) {
-                selected_roam = getListFromPref(prefs.getString(PREF_ROAMING_PKG_UIDS, ""));
-            }
-            if (G.enableVPN()) {
-                selected_vpn = getListFromPref(prefs.getString(PREF_VPN_PKG_UIDS, ""));
-            }
-            if (G.enableTether()) {
-                selected_tether = getListFromPref(prefs.getString(PREF_TETHER_PKG_UIDS, ""));
-            }
-            return (selected_wifi.contains(uid) && selected_3g.contains(uid)) || selected_roam.contains(uid) || selected_vpn.contains(uid) || selected_tether.contains(uid);
-        } catch (NameNotFoundException e) {
-            return false;
-        }
-    }*/
 
     public static Context updateBaseContextLocale(Context context) {
         String language = G.locale(); // Helper method to get saved language from SharedPreferences
@@ -3778,10 +3390,10 @@ public final class Api {
             StringBuilder res = (StringBuilder) params[1];
             Log.i(TAG, "Executing root commands of" + commands.size());
             try {
-                if (!hasRoot())
-                    return exitCode;
+                if (Shell.getShell().isRoot() && !Shell.isAppGrantedRoot())
+                    return -1;
                 if (commands != null && commands.size() > 0) {
-                    List<String> output = Shell.su(String.valueOf(commands)).exec().getOut();
+                    List<String> output = Shell.cmd(String.valueOf(commands)).exec().getOut();
                     if (output != null) {
                         exitCode = 0;
                         if (output.size() > 0) {
@@ -3954,18 +3566,7 @@ public final class Api {
 
     }
 
-
-
-    /*public static void copySharedPreferences(SharedPreferences fromPreferences, SharedPreferences toPreferences, boolean clear) {
-
-        SharedPreferences.Editor editor = toPreferences.edit();
-        copySharedPreferences(fromPreferences, editor);
-        editor.apply();
-    }*/
-
-
     public static void copySharedPreferences(SharedPreferences fromPreferences, SharedPreferences.Editor toEditor) {
-
         for (Map.Entry<String, ?> entry : fromPreferences.getAll().entrySet()) {
             Object value = entry.getValue();
             String key = entry.getKey();
@@ -4002,29 +3603,5 @@ public final class Api {
         PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
         return !pm.isIgnoringBatteryOptimizations(context.getPackageName());
     }
-
-    /*public static class LogProbeCallback extends RootCommand.Callback {
-        public Context ctx;
-        private List<String> availableLogTargets = new ArrayList<>();
-
-        public void cbFunc(RootCommand state) {
-
-            Toast.makeText(ctx, "coming here", Toast.LENGTH_SHORT).show();
-            String joined = TextUtils.join(", ", availableLogTargets);
-            G.logTargets(joined);
-
-
-            if (state.exitCode != 0) {
-                return;
-            }
-            for (String str : state.res.toString().split("\n")) {
-                if (str.equals("LOG")) {
-                    availableLogTargets.add("LOG");
-                } else if (str.equals("NFLOG")) {
-                    availableLogTargets.add("NFLOG");
-                }
-            }
-        }
-    }*/
 
 }
