@@ -4,13 +4,13 @@ android {
     buildToolsVersion '31.0.0'
 
     defaultConfig {
-        applicationId "dev.ukanth.ufirewall"
-        //applicationId "dev.ukanth.ufirewall.donate"
+        //applicationId "dev.ukanth.ufirewall"
+        applicationId "dev.ukanth.ufirewall.donate"
         minSdkVersion 21
         targetSdkVersion 31
         versionCode 20220615
         versionName "3.5.3"
-        //buildConfigField 'boolean', 'DONATE', 'true'
+        buildConfigField 'boolean', 'DONATE', 'true'
     }
 
     buildTypes {
